@@ -3,6 +3,7 @@ import json
 import hmac
 import hashlib
 import requests
+import anthropic
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -12,6 +13,7 @@ PHONE_NUMBER_ID = os.environ["WHATSAPP_PHONE_NUMBER_ID"]
 
 GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
+client = anthropic.Anthropic()
 
 def send_whatsapp_message(to: str, body: str) -> None:
     """Fire-and-forget: POST a text message to a recipient via the Graph API."""
@@ -121,7 +123,13 @@ class handler(BaseHTTPRequestHandler):
             return  # Not a text message — ignore for now
 
         sender, text = result
-        reply = f"AgriPulse received: {text}"
+        # Messae to send to Claude
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": text}]
+        )
+        reply = response.content[0].text 
         send_whatsapp_message(sender, reply)
 
     def log_message(self, format, *args):
