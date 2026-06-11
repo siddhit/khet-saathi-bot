@@ -57,6 +57,15 @@ def extract_text_message(body: dict) -> tuple[str, str] | None:
     except (KeyError, IndexError):
         return None
 
+def detect_language(text: str) -> str:
+    """Identify the primary script in the message using Unicode block counts."""
+    gujarati = sum(1 for c in text if "઀" <= c <= "૿")
+    devanagari = sum(1 for c in text if "ऀ" <= c <= "ॿ")
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    scores = {"Gujarati": gujarati, "Hindi": devanagari, "English": latin}
+    return max(scores, key=scores.get)
+
+
 # A class extending BaseHTTPRequestHandler to handle incoming HTTP requests from Meta's webhook.
 class handler(BaseHTTPRequestHandler):
     """
@@ -125,7 +134,8 @@ class handler(BaseHTTPRequestHandler):
             return  # Not a text message — ignore for now
 
         sender, text = result
-        prompt = '''
+        language = detect_language(text)
+        prompt = f'''
         You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
 
         You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
@@ -134,7 +144,7 @@ class handler(BaseHTTPRequestHandler):
         - Use simple, everyday words — no technical jargon.
         - Answer only what was asked — do not mix plant-level and strategy-level advice.
         - No greetings, sign-offs, or preambles.
-        - Respond with the language received by the user — if they ask in Gujarati, reply in Gujarati; if they ask in English, reply in English.
+        - You MUST respond ONLY in {language}. Do not use any other language.
         '''
 
         # Claude API call
