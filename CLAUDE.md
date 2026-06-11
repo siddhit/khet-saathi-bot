@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AgriPulse is a WhatsApp bot deployed on Vercel (Python serverless runtime) that integrates the Anthropic Claude API to provide agricultural advice. Incoming WhatsApp messages arrive via Meta's Graph API webhook and responses are sent back through the same API.
+Khet-Saathi bot is a WhatsApp bot deployed on Vercel (Python serverless runtime) that integrates the Anthropic Claude API to provide agricultural advice. Incoming WhatsApp messages arrive via Meta's Graph API webhook and responses are sent back through the same API.
 
 ## Architecture
 
