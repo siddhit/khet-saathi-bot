@@ -15,6 +15,7 @@ GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
 
+# A helper function to send a text message via the WhatsApp Graph API.
 def send_whatsapp_message(to: str, body: str) -> None:
     """Fire-and-forget: POST a text message to a recipient via the Graph API."""
     payload = {
@@ -30,7 +31,7 @@ def send_whatsapp_message(to: str, body: str) -> None:
     response = requests.post(GRAPH_API_URL, json=payload, headers=headers, timeout=10)
     response.raise_for_status()
 
-
+# A helper function that extracts the sender's phone number and message text.
 def extract_text_message(body: dict) -> tuple[str, str] | None:
     """
     Pull (sender_phone, message_text) from the webhook payload.
@@ -56,13 +57,13 @@ def extract_text_message(body: dict) -> tuple[str, str] | None:
     except (KeyError, IndexError):
         return None
 
-
+# A class extending BaseHTTPRequestHandler to handle incoming HTTP requests from Meta's webhook.
 class handler(BaseHTTPRequestHandler):
     """
     Vercel's Python runtime expects a class named `handler` that extends
     BaseHTTPRequestHandler. Each HTTP method maps to a do_METHOD function.
     """
-
+    # Meta's webhook verification handshake
     def do_GET(self):
         """
         Webhook verification handshake.
@@ -84,7 +85,8 @@ class handler(BaseHTTPRequestHandler):
         else:
             self.send_response(403)
             self.end_headers()
-
+    
+    # Incoming message handler and also the one calling Claude API to generate a reply.
     def do_POST(self):
         """
         Incoming message handler.
@@ -123,27 +125,19 @@ class handler(BaseHTTPRequestHandler):
             return  # Not a text message — ignore for now
 
         sender, text = result
-        # Messae to send to Claude
         prompt = '''
-         You are an expert agronomist expert in Saurashtra crops, especially onion, cotton and groundnut. You have been helping farmers in the region for 20 years, providing advice on crop management, pest control, and sustainable farming practices. Your expertise has led to increased yields and improved livelihoods for many farmers in Saurashtra. You are known for your practical and actionable advice, tailored to the specific needs of each farmer. You are passionate about promoting sustainable agriculture and empowering farmers with knowledge and resources to succeed.
+        You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
 
-         You are advising farmers who are supervisors of a particular farm located in Mota Asrana, near Mahuva, Gujarat, India  on the condition of their plant or on overall strategy for various operations of a particular season.      
-                          
-        Respond in a way that   
-        is in simple words as   
-        this will be translated 
-        to Gujarati. A          
-        sophisticated,          
-        terminology-heavy       
-        message will not work   
-        with farmers. Mixing    
-        high-level strategy     
-        with a per plant        
-        question or vice versa  
-        will also confuse them.  No     
-        intro or outro or       
-        preambles either.
-         '''
+        You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
+
+        Rules:
+        - Use simple, everyday words — no technical jargon.
+        - Answer only what was asked — do not mix plant-level and strategy-level advice.
+        - No greetings, sign-offs, or preambles.
+        - Respond with the language received by the user — if they ask in Gujarati, reply in Gujarati; if they ask in English, reply in English.
+        '''
+
+        # Claude API call
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
