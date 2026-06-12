@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hmac
 import hashlib
@@ -14,6 +15,69 @@ PHONE_NUMBER_ID = os.environ["WHATSAPP_PHONE_NUMBER_ID"]
 GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
+
+
+# Validate the JSON output from Claude and parse it into a dict.
+def validate_and_parse_response(text: str) -> dict | None:
+    """
+    Parse Claude's response as JSON.
+    Strips markdown code blocks if Claude wraps the JSON anyway.
+    Returns parsed dict if valid and contains required fields, else None.
+    """
+    # Strip markdown code blocks if present (```json ... ``` or ``` ... ```)
+    cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+
+    # Check minimum required fields
+    if "diagnosis" not in parsed or "immediate_actions" not in parsed:
+        return None
+
+    return parsed
+
+def format_for_whatsapp(advice: dict) -> str:
+    """
+    Convert structured JSON advice into WhatsApp-formatted text.
+    WhatsApp supports *bold*, _italic_, and • bullets.
+    """
+    lines = []
+
+    # Primary diagnosis
+    primary = advice["diagnosis"]["primary_suspect"].replace("_", " ").title()
+    lines.append(f"*Most likely:* {primary}")
+
+    # Other suspects
+    others = advice["diagnosis"].get("other_suspects", [])
+    if others:
+        others_text = ", ".join(o.replace("_", " ") for o in others)
+        lines.append(f"_Also check:_ {others_text}")
+
+    # Immediate actions
+    lines.append("\n*Do this today:*")
+    for action in advice["immediate_actions"]:
+        lines.append(f"• {action}")
+
+    # Treatments
+    treatments = advice.get("treatments", [])
+    if treatments:
+        lines.append("\n*If needed:*")
+        for t in treatments:
+            condition = t["condition"].replace("_", " ").title()
+            product = t.get("product", "")
+            dosage = t.get("dosage", "")
+            lines.append(f"• *{condition}:* {product} — {dosage}")
+            if t.get("repeat"):
+                lines.append(f"  Repeat: {t['repeat']}")
+
+    # First follow-up question only
+    questions = advice.get("follow_up_questions", [])
+    if questions:
+        lines.append(f"\n{questions[0]}")
+
+    return "\n".join(lines)
 
 # A helper function to send a text message via the WhatsApp Graph API.
 def send_whatsapp_message(to: str, body: str) -> None:
@@ -135,7 +199,19 @@ class handler(BaseHTTPRequestHandler):
 
         sender, text = result
         language = detect_language(text)
-        prompt = f'''
+        # prompt = f'''
+        # You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
+
+        # You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
+
+        # Rules:
+        # - Use simple, everyday words — no technical jargon.
+        # - Answer only what was asked — do not mix plant-level and strategy-level advice.
+        # - No greetings, sign-offs, or preambles.
+        # - You MUST respond ONLY in {language}. Do not use any other language.
+        # '''
+
+        prompt = '''
         You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
 
         You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
@@ -144,8 +220,48 @@ class handler(BaseHTTPRequestHandler):
         - Use simple, everyday words — no technical jargon.
         - Answer only what was asked — do not mix plant-level and strategy-level advice.
         - No greetings, sign-offs, or preambles.
-        - You MUST respond ONLY in {language}. Do not use any other language.
+        - Always respond in English only. Do not use any other language regardless of the language of the incoming message, the phone number, or any other signal.
+        - Always respond with valid JSON only. No prose before or after. No markdown code blocks.
+
+        Your response must follow this exact structure:
+
+        Example input: "Onion leaves turning yellow from the tips. Started 3 days ago on one side of the field."
+
+        Example output:
+        {
+        "diagnosis": {
+            "primary_suspect": "overwatering",
+            "other_suspects": ["nitrogen_deficiency", "fungal_disease"]
+        },
+        "immediate_actions": [
+            "Stop watering for 3-4 days",
+            "Check soil moisture by digging 5cm down — should be moist not wet",
+            "Look for soft rot or white spots near the soil level"
+        ],
+        "treatments": [
+            {
+            "condition": "nitrogen_deficiency",
+            "product": "urea",
+            "dosage": "2kg per 1000L water",
+            "method": "foliar spray",
+            "timing": "evening",
+            "repeat": "every 10 days, 2 applications"
+            },
+            {
+            "condition": "fungal_disease",
+            "product": "Mancozeb",
+            "dosage": "2.5g per 1L water",
+            "repeat": "after 10 days"
+            }
+        ],
+        "follow_up_questions": [
+            "Is the whole field yellow or just the one side?",
+            "How wet does the soil feel right now?"
+        ],
+        "severity": "medium"
+        }
         '''
+        
 
         # Claude API call
         response = client.messages.create(
@@ -154,8 +270,20 @@ class handler(BaseHTTPRequestHandler):
             system=prompt,
             messages=[{"role": "user", "content": text}]
         )
-        reply = response.content[0].text 
-        send_whatsapp_message(sender, reply)
+        # reply = response.content[0].text 
+        # send_whatsapp_message(sender, reply)
+
+        reply = response.content[0].text
+
+        # Validate and parse JSON
+        parsed = validate_and_parse_response(reply)
+        if parsed is None:
+            send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
+            return
+
+        # Format for WhatsApp and send
+        formatted = format_for_whatsapp(parsed)
+        send_whatsapp_message(sender, formatted)
 
     def log_message(self, format, *args):
         pass  # Suppress BaseHTTPRequestHandler's default stderr logging
