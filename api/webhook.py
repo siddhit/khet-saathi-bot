@@ -278,6 +278,7 @@ class handler(BaseHTTPRequestHandler):
         # send_whatsapp_message(sender, reply)
 
         reply = response.content[0].text
+        print(f"[claude_raw] {reply}")
 
         # Validate and parse JSON
         parsed = validate_and_parse_response(reply)
