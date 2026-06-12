@@ -30,8 +30,9 @@ def validate_and_parse_response(text: str) -> dict | None:
     except json.JSONDecodeError:
         return None
 
-    # Check minimum required fields
-    if "diagnosis" not in parsed or "immediate_actions" not in parsed:
+    # Must have at least one known field to be a valid response
+    known_fields = {"diagnosis", "immediate_actions", "treatments", "follow_up_questions", "severity"}
+    if not known_fields.intersection(parsed.keys()):
         return None
 
     return parsed
@@ -44,19 +45,22 @@ def format_for_whatsapp(advice: dict) -> str:
     lines = []
 
     # Primary diagnosis
-    primary = advice["diagnosis"]["primary_suspect"].replace("_", " ").title()
-    lines.append(f"*Most likely:* {primary}")
+    diagnosis = advice.get("diagnosis")
+    if diagnosis:
+        primary = diagnosis["primary_suspect"].replace("_", " ").title()
+        lines.append(f"*Most likely:* {primary}")
 
-    # Other suspects
-    others = advice["diagnosis"].get("other_suspects", [])
-    if others:
-        others_text = ", ".join(o.replace("_", " ") for o in others)
-        lines.append(f"_Also check:_ {others_text}")
+        others = diagnosis.get("other_suspects", [])
+        if others:
+            others_text = ", ".join(o.replace("_", " ") for o in others)
+            lines.append(f"_Also check:_ {others_text}")
 
     # Immediate actions
-    lines.append("\n*Do this today:*")
-    for action in advice["immediate_actions"]:
-        lines.append(f"• {action}")
+    immediate_actions = advice.get("immediate_actions", [])
+    if immediate_actions:
+        lines.append("\n*Do this today:*")
+        for action in immediate_actions:
+            lines.append(f"• {action}")
 
     # Treatments
     treatments = advice.get("treatments", [])
@@ -221,6 +225,7 @@ class handler(BaseHTTPRequestHandler):
         - Always respond with valid JSON only. No prose before or after. No markdown code blocks.
         - JSON keys and enum-style slug values (primary_suspect, other_suspects, condition) must always be in English.
         - All human-readable text values (immediate_actions, follow_up_questions, product, dosage, method, timing, repeat) must be written in {language}.
+        - If the message is a greeting or not an agricultural question, respond with ONLY a follow_up_questions field in JSON asking what problem they need help with. No diagnosis, no actions.
 
         Your response must follow this exact structure:
 
