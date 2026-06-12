@@ -1,8 +1,6 @@
 import os
 import re
 import json
-import hmac
-import hashlib
 import requests
 import anthropic
 from http.server import BaseHTTPRequestHandler
@@ -211,7 +209,7 @@ class handler(BaseHTTPRequestHandler):
         # - You MUST respond ONLY in {language}. Do not use any other language.
         # '''
 
-        prompt = '''
+        prompt = f'''
         You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
 
         You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
@@ -220,46 +218,47 @@ class handler(BaseHTTPRequestHandler):
         - Use simple, everyday words — no technical jargon.
         - Answer only what was asked — do not mix plant-level and strategy-level advice.
         - No greetings, sign-offs, or preambles.
-        - Always respond in English only. Do not use any other language regardless of the language of the incoming message, the phone number, or any other signal.
         - Always respond with valid JSON only. No prose before or after. No markdown code blocks.
+        - JSON keys and enum-style slug values (primary_suspect, other_suspects, condition) must always be in English.
+        - All human-readable text values (immediate_actions, follow_up_questions, product, dosage, method, timing, repeat) must be written in {language}.
 
         Your response must follow this exact structure:
 
         Example input: "Onion leaves turning yellow from the tips. Started 3 days ago on one side of the field."
 
         Example output:
-        {
-        "diagnosis": {
+        {{
+        "diagnosis": {{
             "primary_suspect": "overwatering",
             "other_suspects": ["nitrogen_deficiency", "fungal_disease"]
-        },
+        }},
         "immediate_actions": [
             "Stop watering for 3-4 days",
             "Check soil moisture by digging 5cm down — should be moist not wet",
             "Look for soft rot or white spots near the soil level"
         ],
         "treatments": [
-            {
+            {{
             "condition": "nitrogen_deficiency",
             "product": "urea",
             "dosage": "2kg per 1000L water",
             "method": "foliar spray",
             "timing": "evening",
             "repeat": "every 10 days, 2 applications"
-            },
-            {
+            }},
+            {{
             "condition": "fungal_disease",
             "product": "Mancozeb",
             "dosage": "2.5g per 1L water",
             "repeat": "after 10 days"
-            }
+            }}
         ],
         "follow_up_questions": [
             "Is the whole field yellow or just the one side?",
             "How wet does the soil feel right now?"
         ],
         "severity": "medium"
-        }
+        }}
         '''
         
 
