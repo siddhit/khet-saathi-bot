@@ -307,13 +307,13 @@ class handler(BaseHTTPRequestHandler):
         print(f"[claude_raw] {reply}")
 
         # Validate and parse JSON
-        # parsed = validate_and_parse_response(reply)
-        # if parsed is None:
-        #     send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
-        #     return
+        parsed = validate_and_parse_response(reply)
+        if parsed is None:
+            send_whatsapp_message(sender, "Sorry, parsing went wrong. Please try again.")
+            return
 
         # Format for WhatsApp and send
-        # formatted = format_for_whatsapp(parsed)
+        formatted = format_for_whatsapp(parsed)
         send_whatsapp_message(sender, reply)
 
     def log_message(self, format, *args):
