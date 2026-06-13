@@ -313,7 +313,7 @@ class handler(BaseHTTPRequestHandler):
 
         # Format for WhatsApp and send
         formatted = format_for_whatsapp(parsed)
-        send_whatsapp_message(sender, reply)
+        send_whatsapp_message(sender, formatted)
 
     def log_message(self, format, *args):
         pass  # Suppress BaseHTTPRequestHandler's default stderr logging
