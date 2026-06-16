@@ -14,6 +14,21 @@ GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
 
+# A simple in-memory store for conversation history, keyed by sender phone number.
+conversation_history: dict[str, list[dict]] = {}
+MAX_HISTORY_TURNS = 10
+
+# Helper functions to manage conversation history. In production, consider a persistent store like Redis or a database.
+def get_history(phone: str) -> list[dict]:
+    return conversation_history.get(phone, [])
+
+# Append a new turn to the conversation history, keeping only the last N turns to limit context size.
+def update_history(phone: str, role: str, content: str) -> None:
+    if phone not in conversation_history:
+        conversation_history[phone] = []
+    conversation_history[phone].append({"role": role, "content": content})
+    if len(conversation_history[phone]) > MAX_HISTORY_TURNS:
+        conversation_history[phone] = conversation_history[phone][-MAX_HISTORY_TURNS:]
 
 # Validate the JSON output from Claude and parse it into a dict.
 def validate_and_parse_response(text: str) -> dict | None:
@@ -291,19 +306,26 @@ class handler(BaseHTTPRequestHandler):
         }}
         '''
 
-        
+        # Add the new user message to the conversation history, then call Claude with the full history as context.
+        history = get_history(sender)
+        messages_to_send = history + [{"role": "user", "content": text}]
 
         # Claude API call
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
             system=prompt,
-            messages=[{"role": "user", "content": text}]
+            messages=messages_to_send
         )
-        # reply = response.content[0].text 
-        # send_whatsapp_message(sender, reply)
+  
 
         reply = response.content[0].text
+
+        # Update history with the new user message and Claude's reply. This will be used as context for the next turn.
+        update_history(sender, "user", text)
+        update_history(sender, "assistant", reply)
+
+        # Debug: print the raw reply in Vercel logs from Claude before parsing/formatting
         print(f"[claude_raw] {reply}")
 
         # Validate and parse JSON
