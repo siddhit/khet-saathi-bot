@@ -14,7 +14,7 @@ PHONE_NUMBER_ID = os.environ["WHATSAPP_PHONE_NUMBER_ID"]
 GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
-kv = redis.from_url(os.environ["KV_URL"])
+kv = redis.from_url(os.environ["KV_URL"], ssl_cert_reqs="none")
 MAX_HISTORY_TURNS = 10
 HISTORY_EXPIRY = 86400  # 24 hours
 
@@ -211,6 +211,14 @@ class handler(BaseHTTPRequestHandler):
         # Parse and process after acknowledging
         # Note: in Vercel serverless, code after writing the response still runs
         # within the same invocation — this is fine for Phase 0.
+        try:
+            self._process(raw_body)
+        except Exception as exc:
+            # Catch-all so post-200 failures are always visible in Vercel logs.
+            print(f"[error] unhandled exception in _process: {exc!r}")
+
+    def _process(self, raw_body: bytes) -> None:
+        """Process an incoming webhook payload after the 200 ack is sent."""
         try:
             body = json.loads(raw_body)
         except json.JSONDecodeError:
