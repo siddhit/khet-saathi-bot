@@ -339,9 +339,6 @@ class handler(BaseHTTPRequestHandler):
         update_history(sender, "user", text)
         update_history(sender, "assistant", reply)
 
-        # Debug: print the raw reply in Vercel logs from Claude before parsing/formatting
-        print(f"[claude_raw] {reply}")
-
         # Validate and parse JSON
         parsed = validate_and_parse_response(reply)
         if parsed is None:
