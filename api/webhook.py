@@ -160,7 +160,7 @@ class handler(BaseHTTPRequestHandler):
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
-                system=SYSTEM_PROMPT.format(language=language),
+                system=SYSTEM_PROMPT.replace("{language}", language),
                 messages=[{"role": "user", "content": text}],
             )
             reply = response.content[0].text
