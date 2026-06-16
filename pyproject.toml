@@ -2,7 +2,7 @@
 name = "agripulse-bot"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["requests==2.32.3", "anthropic"]
+dependencies = ["requests==2.32.3", "anthropic", "redis"]
 
 [tool.vercel]
 entrypoint = "api.webhook:handler"

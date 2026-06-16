@@ -1,3 +1,4 @@
 .vercel
 content_and_exam/
 data/
+.env*
