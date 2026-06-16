@@ -14,23 +14,43 @@ GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
 
-# In-memory conversation history keyed by sender phone number.
-# NOTE: resets on cold start / redeploy. Persistent storage (Redis/Upstash)
-# is the correct long-term fix — deferred until after recording.
-conversation_history: dict[str, list[dict]] = {}
+# Upstash Redis via REST API — HTTP, not TCP sockets, so it works reliably
+# in Vercel's Python serverless runtime with no connection-hang risk.
+KV_REST_API_URL = os.environ["KV_REST_API_URL"]
+KV_REST_API_TOKEN = os.environ["KV_REST_API_TOKEN"]
 MAX_HISTORY_TURNS = 10
+HISTORY_EXPIRY = 86400  # 24 hours in seconds
+
+
+def _kv_headers() -> dict:
+    return {"Authorization": f"Bearer {KV_REST_API_TOKEN}"}
 
 
 def get_history(phone: str) -> list[dict]:
-    return conversation_history.get(phone, [])
+    """Fetch conversation history from Upstash via REST GET."""
+    resp = requests.get(
+        f"{KV_REST_API_URL}/get/chat:{phone}",
+        headers=_kv_headers(),
+        timeout=5,
+    )
+    result = resp.json().get("result")
+    if result is None:
+        return []
+    return json.loads(result)
 
 
 def update_history(phone: str, role: str, content: str) -> None:
-    if phone not in conversation_history:
-        conversation_history[phone] = []
-    conversation_history[phone].append({"role": role, "content": content})
-    if len(conversation_history[phone]) > MAX_HISTORY_TURNS:
-        conversation_history[phone] = conversation_history[phone][-MAX_HISTORY_TURNS:]
+    """Append a turn and persist to Upstash via REST pipeline (SET + EX)."""
+    history = get_history(phone)
+    history.append({"role": role, "content": content})
+    if len(history) > MAX_HISTORY_TURNS:
+        history = history[-MAX_HISTORY_TURNS:]
+    requests.post(
+        f"{KV_REST_API_URL}/pipeline",
+        headers={**_kv_headers(), "Content-Type": "application/json"},
+        json=[["SET", f"chat:{phone}", json.dumps(history), "EX", str(HISTORY_EXPIRY)]],
+        timeout=5,
+    )
 
 # Validate the JSON output from Claude and parse it into a dict.
 def validate_and_parse_response(text: str) -> dict | None:
