@@ -3,6 +3,7 @@ import re
 import json
 import requests
 import anthropic
+import redis
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -13,22 +14,27 @@ PHONE_NUMBER_ID = os.environ["WHATSAPP_PHONE_NUMBER_ID"]
 GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
-
-# A simple in-memory store for conversation history, keyed by sender phone number.
-conversation_history: dict[str, list[dict]] = {}
+kv = redis.from_url(os.environ["KV_URL"])
 MAX_HISTORY_TURNS = 10
+HISTORY_EXPIRY = 86400  # 24 hours
+
 
 # Helper functions to manage conversation history. In production, consider a persistent store like Redis or a database.
 def get_history(phone: str) -> list[dict]:
-    return conversation_history.get(phone, [])
+    """Retrieve conversation history from Vercel KV."""
+    data = kv.get(f"chat:{phone}")
+    if data is None:
+        return []
+    return json.loads(data)
 
 # Append a new turn to the conversation history, keeping only the last N turns to limit context size.
 def update_history(phone: str, role: str, content: str) -> None:
-    if phone not in conversation_history:
-        conversation_history[phone] = []
-    conversation_history[phone].append({"role": role, "content": content})
-    if len(conversation_history[phone]) > MAX_HISTORY_TURNS:
-        conversation_history[phone] = conversation_history[phone][-MAX_HISTORY_TURNS:]
+    """Append message to history in Vercel KV, trim if over limit, expire after 24h."""
+    history = get_history(phone)
+    history.append({"role": role, "content": content})
+    if len(history) > MAX_HISTORY_TURNS:
+        history = history[-MAX_HISTORY_TURNS:]
+    kv.set(f"chat:{phone}", json.dumps(history), ex=HISTORY_EXPIRY)
 
 # Validate the JSON output from Claude and parse it into a dict.
 def validate_and_parse_response(text: str) -> dict | None:
