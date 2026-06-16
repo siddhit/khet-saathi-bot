@@ -14,182 +14,122 @@ GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
 
-# Upstash Redis via REST API — HTTP, not TCP sockets, so it works reliably
-# in Vercel's Python serverless runtime with no connection-hang risk.
-KV_REST_API_URL = os.environ["KV_REST_API_URL"]
-KV_REST_API_TOKEN = os.environ["KV_REST_API_TOKEN"]
-MAX_HISTORY_TURNS = 10
-HISTORY_EXPIRY = 86400  # 24 hours in seconds
 
-
-def _kv_headers() -> dict:
-    return {"Authorization": f"Bearer {KV_REST_API_TOKEN}"}
-
-
-def get_history(phone: str) -> list[dict]:
-    """Fetch conversation history from Upstash via REST GET."""
-    resp = requests.get(
-        f"{KV_REST_API_URL}/get/chat:{phone}",
-        headers=_kv_headers(),
-        timeout=5,
-    )
-    result = resp.json().get("result")
-    if result is None:
-        return []
-    return json.loads(result)
-
-
-def update_history(phone: str, role: str, content: str) -> None:
-    """Append a turn and persist to Upstash via REST pipeline (SET + EX)."""
-    history = get_history(phone)
-    history.append({"role": role, "content": content})
-    if len(history) > MAX_HISTORY_TURNS:
-        history = history[-MAX_HISTORY_TURNS:]
-    requests.post(
-        f"{KV_REST_API_URL}/pipeline",
-        headers={**_kv_headers(), "Content-Type": "application/json"},
-        json=[["SET", f"chat:{phone}", json.dumps(history), "EX", str(HISTORY_EXPIRY)]],
-        timeout=5,
-    )
-
-# Validate the JSON output from Claude and parse it into a dict.
 def validate_and_parse_response(text: str) -> dict | None:
-    """
-    Parse Claude's response as JSON.
-    Strips markdown code blocks if Claude wraps the JSON anyway.
-    Returns parsed dict if valid and contains required fields, else None.
-    """
-    # Strip markdown code blocks if present (```json ... ``` or ``` ... ```)
+    """Parse Claude's JSON response; strips markdown fences if present."""
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
-
     try:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError:
         return None
-
-    # Must have at least one known field to be a valid response
     known_fields = {"diagnosis", "immediate_actions", "treatments", "follow_up_questions", "severity"}
     if not known_fields.intersection(parsed.keys()):
         return None
-
     return parsed
 
+
 def format_for_whatsapp(advice: dict) -> str:
-    """
-    Convert structured JSON advice into WhatsApp-formatted text.
-    WhatsApp supports *bold*, _italic_, and • bullets.
-    """
+    """Convert structured JSON advice into WhatsApp-formatted text."""
     lines = []
 
-    # Primary diagnosis
     diagnosis = advice.get("diagnosis")
     if diagnosis:
         primary = diagnosis["primary_suspect"].replace("_", " ").title()
         lines.append(f"*Most likely:* {primary}")
-
         others = diagnosis.get("other_suspects", [])
         if others:
-            others_text = ", ".join(o.replace("_", " ") for o in others)
-            lines.append(f"_Also check:_ {others_text}")
+            lines.append(f"_Also check:_ {', '.join(o.replace('_', ' ') for o in others)}")
 
-    # Immediate actions
     immediate_actions = advice.get("immediate_actions", [])
     if immediate_actions:
         lines.append("\n*Do this today:*")
         for action in immediate_actions:
             lines.append(f"• {action}")
 
-    # Treatments
     treatments = advice.get("treatments", [])
     if treatments:
         lines.append("\n*If needed:*")
         for t in treatments:
             condition = t["condition"].replace("_", " ").title()
-            product = t.get("product", "")
-            dosage = t.get("dosage", "")
-            lines.append(f"• *{condition}:* {product} — {dosage}")
+            lines.append(f"• *{condition}:* {t.get('product', '')} — {t.get('dosage', '')}")
             if t.get("repeat"):
                 lines.append(f"  Repeat: {t['repeat']}")
 
-    # First follow-up question only
     questions = advice.get("follow_up_questions", [])
     if questions:
         lines.append(f"\n{questions[0]}")
 
     return "\n".join(lines)
 
-# A helper function to send a text message via the WhatsApp Graph API.
+
 def send_whatsapp_message(to: str, body: str) -> None:
-    """Fire-and-forget: POST a text message to a recipient via the Graph API."""
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": body},
-    }
-    headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(GRAPH_API_URL, json=payload, headers=headers, timeout=10)
-    response.raise_for_status()
+    """POST a text message to a recipient via the WhatsApp Graph API."""
+    requests.post(
+        GRAPH_API_URL,
+        json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}},
+        headers={"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"},
+        timeout=10,
+    ).raise_for_status()
 
-# A helper function that extracts the sender's phone number and message text.
+
 def extract_text_message(body: dict) -> tuple[str, str] | None:
-    """
-    Pull (sender_phone, message_text) from the webhook payload.
-    Returns None if this isn't a text message (image, audio, status update, etc.).
-    """
+    """Return (sender_phone, message_text) or None if not a text message."""
     try:
-        entry = body["entry"][0]
-        change = entry["changes"][0]["value"]
-
-        # Status updates (read receipts, delivered confirmations) arrive on the
-        # same endpoint — they have no "messages" key, only "statuses".
+        change = body["entry"][0]["changes"][0]["value"]
         if "messages" not in change:
             return None
-
         message = change["messages"][0]
         if message["type"] != "text":
             return None
-
-        sender = message["from"]
-        text = message["text"]["body"]
-        return sender, text
-
+        return message["from"], message["text"]["body"]
     except (KeyError, IndexError):
         return None
 
+
 def detect_language(text: str) -> str:
     """Identify the primary script in the message using Unicode block counts."""
-    gujarati = sum(1 for c in text if "઀" <= c <= "૿")
-    devanagari = sum(1 for c in text if "ऀ" <= c <= "ॿ")
-    latin = sum(1 for c in text if c.isascii() and c.isalpha())
-    scores = {"Gujarati": gujarati, "Hindi": devanagari, "English": latin}
+    scores = {
+        "Gujarati": sum(1 for c in text if "઀" <= c <= "૿"),
+        "Hindi": sum(1 for c in text if "ऀ" <= c <= "ॿ"),
+        "English": sum(1 for c in text if c.isascii() and c.isalpha()),
+    }
     return max(scores, key=scores.get)
 
 
-# A class extending BaseHTTPRequestHandler to handle incoming HTTP requests from Meta's webhook.
-class handler(BaseHTTPRequestHandler):
-    """
-    Vercel's Python runtime expects a class named `handler` that extends
-    BaseHTTPRequestHandler. Each HTTP method maps to a do_METHOD function.
-    """
-    # Meta's webhook verification handshake
-    def do_GET(self):
-        """
-        Webhook verification handshake.
-        Meta calls this once when you register the webhook URL in the console.
-        """
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
+SYSTEM_PROMPT = """You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
 
+You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
+
+Rules:
+- Use simple, everyday words — no technical jargon.
+- Answer only what was asked — do not mix plant-level and strategy-level advice.
+- No greetings, sign-offs, or preambles.
+- Always respond with valid JSON only. No prose before or after. No markdown code blocks.
+- JSON keys and enum-style slug values (primary_suspect, other_suspects, condition) must always be in English.
+- All human-readable text values (immediate_actions, follow_up_questions, product, dosage, method, timing, repeat) must be written in {language}.
+- If the message is a greeting or not an agricultural question, respond with ONLY a follow_up_questions field in JSON asking what problem they need help with. No diagnosis, no actions.
+
+Respond with this JSON structure:
+{
+  "diagnosis": {"primary_suspect": "slug", "other_suspects": ["slug"]},
+  "immediate_actions": ["..."],
+  "treatments": [{"condition": "slug", "product": "...", "dosage": "...", "method": "...", "timing": "...", "repeat": "..."}],
+  "follow_up_questions": ["..."],
+  "severity": "low|medium|high"
+}"""
+
+
+class handler(BaseHTTPRequestHandler):
+    """Vercel Python runtime expects a class named `handler` extending BaseHTTPRequestHandler."""
+
+    def do_GET(self):
+        """Webhook verification handshake — Meta calls this once on registration."""
+        params = parse_qs(urlparse(self.path).query)
         mode = params.get("hub.mode", [None])[0]
         token = params.get("hub.verify_token", [None])[0]
         challenge = params.get("hub.challenge", [None])[0]
 
         if mode == "subscribe" and token == VERIFY_TOKEN:
-            # Echo the challenge back — this is how Meta knows you control this URL
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -197,173 +137,48 @@ class handler(BaseHTTPRequestHandler):
         else:
             self.send_response(403)
             self.end_headers()
-    
-    # Incoming message handler and also the one calling Claude API to generate a reply.
+
     def do_POST(self):
-        """
-        Incoming message handler.
+        """Receive a WhatsApp message, call Claude, reply — then return 200."""
+        raw_body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
 
-        Phase 0 pattern (synchronous):
-        - Parse payload
-        - Call WhatsApp API to send reply
-        - Return 200
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError:
+            self._ok()
+            return
 
-        Phase 1+ will change this to:
-        - Parse payload, enqueue job
-        - Return 200 immediately
-        - Worker sends reply asynchronously
-        (Required once AI processing time exceeds ~3–5 seconds)
-        """
-        content_length = int(self.headers.get("Content-Length", 0))
-        raw_body = self.rfile.read(content_length)
+        result = extract_text_message(body)
+        if result is None:
+            self._ok()
+            return  # Status update or non-text — ignore
 
-        # Always return 200 first — if we return an error, Meta will retry
-        # repeatedly. A 200 tells Meta "received, handled."
+        sender, text = result
+        language = detect_language(text)
+
+        try:
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT.format(language=language),
+                messages=[{"role": "user", "content": text}],
+            )
+            reply = response.content[0].text
+            parsed = validate_and_parse_response(reply)
+            if parsed:
+                send_whatsapp_message(sender, format_for_whatsapp(parsed))
+            else:
+                send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
+        except Exception:
+            pass  # Never let an exception prevent the 200 to Meta
+
+        self._ok()
+
+    def _ok(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"status": "ok"}')
 
-        # Parse and process after acknowledging
-        # Note: in Vercel serverless, code after writing the response still runs
-        # within the same invocation — this is fine for Phase 0.
-        try:
-            self._process(raw_body)
-        except Exception as exc:
-            # Catch-all so post-200 failures are always visible in Vercel logs.
-            print(f"[error] unhandled exception in _process: {exc!r}")
-
-    def _process(self, raw_body: bytes) -> None:
-        """Process an incoming webhook payload after the 200 ack is sent."""
-        try:
-            body = json.loads(raw_body)
-        except json.JSONDecodeError:
-            return
-
-        result = extract_text_message(body)
-        if result is None:
-            return  # Not a text message — ignore for now
-
-        sender, text = result
-        language = detect_language(text)
-        prompt = f'''
-        You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
-
-        You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
-
-        Rules:
-        - Use simple, everyday words — no technical jargon.
-        - Answer only what was asked — do not mix plant-level and strategy-level advice.
-        - No greetings, sign-offs, or preambles.
-        - Always respond with valid JSON only. No prose before or after. No markdown code blocks.
-        - JSON keys and enum-style slug values (primary_suspect, other_suspects, condition) must always be in English.
-        - All human-readable text values (immediate_actions, follow_up_questions, product, dosage, method, timing, repeat) must be written in {language}.
-        - If the message is a greeting or not an agricultural question, respond with ONLY a follow_up_questions field in JSON asking what problem they need help with. No diagnosis, no actions.
-
-        Your response must follow this exact structure:
-
-        Example input: "Onion leaves turning yellow from the tips. Started 3 days ago on one side of the field."
-
-        Example output:
-        {{
-        "diagnosis": {{
-            "primary_suspect": "overwatering",
-            "other_suspects": ["nitrogen_deficiency", "fungal_disease"]
-        }},
-        "immediate_actions": [
-            "Stop watering for 3-4 days",
-            "Check soil moisture by digging 5cm down — should be moist not wet",
-            "Look for soft rot or white spots near the soil level"
-        ],
-        "treatments": [
-            {{
-            "condition": "nitrogen_deficiency",
-            "product": "urea",
-            "dosage": "2kg per 1000L water",
-            "method": "foliar spray",
-            "timing": "evening",
-            "repeat": "every 10 days, 2 applications"
-            }},
-            {{
-            "condition": "fungal_disease",
-            "product": "Mancozeb",
-            "dosage": "2.5g per 1L water",
-            "repeat": "after 10 days"
-            }}
-        ],
-        "follow_up_questions": [
-            "Is the whole field yellow or just the one side?",
-            "How wet does the soil feel right now?"
-        ],
-        "severity": "medium"
-        }}
-
-        Example input: "Thrips attack on east side of field. Leaves curling and silver patches on 4-5 rows."
-
-        Example output:
-        {{
-        "diagnosis": {{
-        "primary_suspect": "thrips_infestation",
-        "other_suspects": ["mite_damage"]
-        }},
-        "immediate_actions": [
-        "Check 10 plants on the east side — count thrips under leaves and inside the flower",
-        "Look closely for tiny moving dots — that confirms mites not just thrips",
-        "Do not irrigate today — wet conditions help thrips spread"
-        ],
-        "treatments": [
-        {{
-            "condition": "thrips_infestation",
-            "product": "Imidacloprid 17.8 SL",
-            "dosage": "5ml per 15L water",
-            "method": "foliar spray",
-            "timing": "early morning or evening",
-            "repeat": "after 7 days if still present"
-        }},
-        {{
-            "condition": "mite_damage",
-            "product": "Abamectin 1.8 EC",
-            "dosage": "5ml per 15L water",
-            "method": "foliar spray",
-            "timing": "early morning",
-            "repeat": "after 10 days"
-        }}
-        ],
-        "follow_up_questions": [
-        "How many thrips do you see per plant on average?"
-        ],
-        "severity": "high"
-        }}
-        '''
-
-        # Add the new user message to the conversation history, then call Claude with the full history as context.
-        history = get_history(sender)
-        messages_to_send = history + [{"role": "user", "content": text}]
-
-        # Claude API call
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=prompt,
-            messages=messages_to_send
-        )
-  
-
-        reply = response.content[0].text
-
-        # Update history with the new user message and Claude's reply. This will be used as context for the next turn.
-        update_history(sender, "user", text)
-        update_history(sender, "assistant", reply)
-
-        # Validate and parse JSON
-        parsed = validate_and_parse_response(reply)
-        if parsed is None:
-            send_whatsapp_message(sender, "Sorry, parsing went wrong. Please try again.")
-            return
-
-        # Format for WhatsApp and send
-        formatted = format_for_whatsapp(parsed)
-        send_whatsapp_message(sender, formatted)
-
     def log_message(self, format, *args):
-        pass  # Suppress BaseHTTPRequestHandler's default stderr logging
+        pass  # Suppress default stderr logging
