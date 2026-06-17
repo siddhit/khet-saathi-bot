@@ -14,6 +14,38 @@ GRAPH_API_URL = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
 
 client = anthropic.Anthropic()
 
+# Upstash Redis via REST API — HTTP calls, not TCP sockets.
+# Survives across Vercel cold starts; every conversation persists for 24h.
+KV_REST_API_URL = os.environ["KV_REST_API_URL"]
+KV_REST_API_TOKEN = os.environ["KV_REST_API_TOKEN"]
+MAX_HISTORY_TURNS = 10
+HISTORY_EXPIRY = 86400  # 24 hours
+
+
+def get_history(phone: str) -> list[dict]:
+    """Fetch this sender's conversation history from Upstash."""
+    resp = requests.get(
+        f"{KV_REST_API_URL}/get/chat:{phone}",
+        headers={"Authorization": f"Bearer {KV_REST_API_TOKEN}"},
+        timeout=5,
+    )
+    result = resp.json().get("result")
+    return json.loads(result) if result else []
+
+
+def update_history(phone: str, role: str, content: str) -> None:
+    """Append a turn and write back to Upstash with a 24h expiry."""
+    history = get_history(phone)
+    history.append({"role": role, "content": content})
+    if len(history) > MAX_HISTORY_TURNS:
+        history = history[-MAX_HISTORY_TURNS:]
+    requests.post(
+        f"{KV_REST_API_URL}/pipeline",
+        headers={"Authorization": f"Bearer {KV_REST_API_TOKEN}", "Content-Type": "application/json"},
+        json=[["SET", f"chat:{phone}", json.dumps(history), "EX", str(HISTORY_EXPIRY)]],
+        timeout=5,
+    )
+
 
 def validate_and_parse_response(text: str) -> dict | None:
     """Parse Claude's JSON response; strips markdown fences if present."""
@@ -157,13 +189,16 @@ class handler(BaseHTTPRequestHandler):
         language = detect_language(text)
 
         try:
+            history = get_history(sender)
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT.replace("{language}", language),
-                messages=[{"role": "user", "content": text}],
+                messages=history + [{"role": "user", "content": text}],
             )
             reply = response.content[0].text
+            update_history(sender, "user", text)
+            update_history(sender, "assistant", reply)
             parsed = validate_and_parse_response(reply)
             if parsed:
                 send_whatsapp_message(sender, format_for_whatsapp(parsed))
