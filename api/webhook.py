@@ -133,17 +133,28 @@ VALID_CATEGORIES = {"crop_disease", "farm_strategy", "off_topic", "greeting"}
 
 def classify_message(text: str) -> str:
     """Classify incoming message into one of four routing categories."""
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=20,
-        system=(
-            "You are a message classifier. Classify the following message into exactly one of these four categories: "
-            "crop_disease, farm_strategy, off_topic, greeting. Return only the category name, nothing else."
-        ),
-        messages=[{"role": "user", "content": text}],
-    )
-    category = response.content[0].text.strip().lower()
-    return category if category in VALID_CATEGORIES else "crop_disease"
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=20,
+            system=(
+                "You are a message classifier for a farm advisory bot that only handles on-farm crop management. "
+                "Classify the message into exactly one of these four categories:\n"
+                "- crop_disease: plant health, pests, diseases, or visible crop damage\n"
+                "- farm_strategy: on-farm decisions such as irrigation, fertiliser, planting, harvesting, or crop rotation\n"
+                "- off_topic: market prices, weather forecasts, general knowledge, or anything not about on-farm crop management\n"
+                "- greeting: a greeting or introduction with no specific question\n"
+                "Return only the category name, nothing else."
+            ),
+            messages=[{"role": "user", "content": text}],
+        )
+        # Normalize hyphens/spaces to underscores and strip stray punctuation
+        # before checking against valid categories (model may use "off-topic" etc.)
+        raw = response.content[0].text.strip().lower()
+        category = re.sub(r"[-\s]+", "_", raw).strip("_.,!?;:")
+        return category if category in VALID_CATEGORIES else "crop_disease"
+    except Exception:
+        return "crop_disease"
 
 
 SYSTEM_PROMPT = """You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
@@ -207,11 +218,17 @@ class handler(BaseHTTPRequestHandler):
         classification = classify_message(text)
         print(f"[classify] {classification}")
         if classification == "off_topic":
-            send_whatsapp_message(sender, "I can only help with farming questions about onion, cotton, and groundnut. What crop problem can I help you with?")
+            try:
+                send_whatsapp_message(sender, "I can only help with farming questions about onion, cotton, and groundnut. What crop problem can I help you with?")
+            except Exception:
+                pass
             self._ok()
             return
         if classification == "greeting":
-            send_whatsapp_message(sender, "Hello! I'm your farm advisor for the Mota Asrana farm. What crop or field problem can I help you with today?")
+            try:
+                send_whatsapp_message(sender, "Hello! I'm your farm advisor for the Mota Asrana farm. What crop or field problem can I help you with today?")
+            except Exception:
+                pass
             self._ok()
             return
         language = detect_language(text)
