@@ -128,6 +128,24 @@ def detect_language(text: str) -> str:
     return max(scores, key=scores.get)
 
 
+VALID_CATEGORIES = {"crop_disease", "farm_strategy", "off_topic", "greeting"}
+
+
+def classify_message(text: str) -> str:
+    """Classify incoming message into one of four routing categories."""
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=20,
+        system=(
+            "You are a message classifier. Classify the following message into exactly one of these four categories: "
+            "crop_disease, farm_strategy, off_topic, greeting. Return only the category name, nothing else."
+        ),
+        messages=[{"role": "user", "content": text}],
+    )
+    category = response.content[0].text.strip().lower()
+    return category if category in VALID_CATEGORIES else "crop_disease"
+
+
 SYSTEM_PROMPT = """You are an expert agronomist specialising in Saurashtra crops — onion, cotton, and groundnut. You have advised farmers in the Mota Asrana area near Mahuva, Gujarat for 20 years. You give practical, actionable advice tailored to each farmer's situation.
 
 You are advising farm supervisors at a farm in Mota Asrana, near Mahuva, Gujarat, India on plant condition or seasonal strategy.
@@ -186,10 +204,21 @@ class handler(BaseHTTPRequestHandler):
             return  # Status update or non-text — ignore
 
         sender, text = result
+        classification = classify_message(text)
+        print(f"[classify] {classification}")
+        if classification == "off_topic":
+            send_whatsapp_message(sender, "I can only help with farming questions about onion, cotton, and groundnut. What crop problem can I help you with?")
+            self._ok()
+            return
+        if classification == "greeting":
+            send_whatsapp_message(sender, "Hello! I'm your farm advisor for the Mota Asrana farm. What crop or field problem can I help you with today?")
+            self._ok()
+            return
         language = detect_language(text)
 
         try:
             history = get_history(sender)
+            print(f"[agent] routing {classification} from {sender}")
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
