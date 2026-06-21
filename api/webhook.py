@@ -180,7 +180,60 @@ Respond with this JSON structure:
 }"""
 
 
-class handler(BaseHTTPRequestHandler):  
+FARM_STRATEGY_PROMPT = """You are a farm advisor specialising in seasonal and operational decisions for Saurashtra farms — onion, cotton, and groundnut near Mahuva and Mota Asrana, Gujarat.
+
+You cover planting and harvest timing, irrigation scheduling, fertiliser timing, crop rotation, and storage decisions.
+
+You have no crop disease knowledge — if the farmer raises a disease or pest problem, direct them to ask about it separately.
+
+Rules:
+- Respond conversationally in plain text in {language}.
+- Use simple, everyday words — no technical jargon.
+- No JSON, no schema, no bullet lists unless naturally helpful.
+- No greetings, sign-offs, or preambles."""
+
+
+def handle_crop_disease(sender: str, text: str, language: str) -> None:
+    try:
+        history = get_history(sender)
+        print(f"[agent] routing crop_disease from {sender}")
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT.replace("{language}", language),
+            messages=history + [{"role": "user", "content": text}],
+        )
+        reply = response.content[0].text
+        update_history(sender, "user", text)
+        update_history(sender, "assistant", reply)
+        parsed = validate_and_parse_response(reply)
+        if parsed:
+            send_whatsapp_message(sender, format_for_whatsapp(parsed))
+        else:
+            send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
+    except Exception:
+        pass  # Never let an exception prevent the 200 to Meta
+
+
+def handle_farm_strategy(sender: str, text: str, language: str) -> None:
+    try:
+        history = get_history(sender)
+        print(f"[agent] routing farm_strategy from {sender}")
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=FARM_STRATEGY_PROMPT.replace("{language}", language),
+            messages=history + [{"role": "user", "content": text}],
+        )
+        reply = response.content[0].text
+        update_history(sender, "user", text)
+        update_history(sender, "assistant", reply)
+        send_whatsapp_message(sender, reply)
+    except Exception:
+        pass  # Never let an exception prevent the 200 to Meta
+
+
+class handler(BaseHTTPRequestHandler):
     """Vercel Python runtime expects a class named `handler` extending BaseHTTPRequestHandler."""
 
     def do_GET(self):
@@ -233,25 +286,10 @@ class handler(BaseHTTPRequestHandler):
             return
         language = detect_language(text)
 
-        try:
-            history = get_history(sender)
-            print(f"[agent] routing {classification} from {sender}")
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT.replace("{language}", language),
-                messages=history + [{"role": "user", "content": text}],
-            )
-            reply = response.content[0].text
-            update_history(sender, "user", text)
-            update_history(sender, "assistant", reply)
-            parsed = validate_and_parse_response(reply)
-            if parsed:
-                send_whatsapp_message(sender, format_for_whatsapp(parsed))
-            else:
-                send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
-        except Exception:
-            pass  # Never let an exception prevent the 200 to Meta
+        if classification == "crop_disease":
+            handle_crop_disease(sender, text, language)
+        elif classification == "farm_strategy":
+            handle_farm_strategy(sender, text, language)
 
         self._ok()
 
