@@ -180,7 +180,7 @@ Respond with this JSON structure:
 }"""
 
 
-class handler(BaseHTTPRequestHandler):
+class handler(BaseHTTPRequestHandler):  
     """Vercel Python runtime expects a class named `handler` extending BaseHTTPRequestHandler."""
 
     def do_GET(self):
