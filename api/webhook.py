@@ -141,8 +141,8 @@ def classify_message(text: str) -> str:
                 "You are a message classifier for a farm advisory bot that only handles on-farm crop management. "
                 "Classify the message into exactly one of these four categories:\n"
                 "- crop_disease: plant health, pests, diseases, or visible crop damage\n"
-                "- farm_strategy: on-farm decisions such as irrigation, fertiliser, planting, harvesting, or crop rotation\n"
-                "- off_topic: market prices, weather forecasts, general knowledge, or anything not about on-farm crop management\n"
+                "- farm_strategy: on-farm decisions such as irrigation, fertiliser, planting, harvesting, crop rotation, storage, or timing decisions — including questions about whether to harvest or sell now vs. wait, even if prices are mentioned as context\n"
+                "- off_topic: requests for current price quotes, price forecasts, weather forecasts, general knowledge, or anything not about on-farm crop management\n"
                 "- greeting: a greeting or introduction with no specific question\n"
                 "Return only the category name, nothing else."
             ),
@@ -196,7 +196,7 @@ Rules:
 def handle_crop_disease(sender: str, text: str, language: str) -> None:
     try:
         history = get_history(sender)
-        print(f"[agent] routing crop_disease from {sender}")
+        print(f"[agent] routing crop_disease from {sender}", flush=True)
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
@@ -218,7 +218,7 @@ def handle_crop_disease(sender: str, text: str, language: str) -> None:
 def handle_farm_strategy(sender: str, text: str, language: str) -> None:
     try:
         history = get_history(sender)
-        print(f"[agent] routing farm_strategy from {sender}")
+        print(f"[agent] routing farm_strategy from {sender}", flush=True)
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
@@ -269,7 +269,7 @@ class handler(BaseHTTPRequestHandler):
 
         sender, text = result
         classification = classify_message(text)
-        print(f"[classify] {classification}")
+        print(f"[classify] {classification}", flush=True)
         if classification == "off_topic":
             try:
                 send_whatsapp_message(sender, "I can only help with farming questions about onion, cotton, and groundnut. What crop problem can I help you with?")
