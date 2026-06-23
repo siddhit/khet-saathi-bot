@@ -47,6 +47,31 @@ def update_history(phone: str, role: str, content: str) -> None:
     )
 
 
+def get_farm_state(phone: str) -> dict | None:
+    try:
+        resp = requests.get(
+            f"{KV_REST_API_URL}/get/state:{phone}",
+            headers={"Authorization": f"Bearer {KV_REST_API_TOKEN}"},
+            timeout=5,
+        )
+        result = resp.json().get("result")
+        return json.loads(result) if result else None
+    except Exception:
+        return None
+
+
+def set_farm_state(phone: str, diagnosis: dict) -> None:
+    try:
+        requests.post(
+            f"{KV_REST_API_URL}/pipeline",
+            headers={"Authorization": f"Bearer {KV_REST_API_TOKEN}", "Content-Type": "application/json"},
+            json=[["SET", f"state:{phone}", json.dumps(diagnosis), "EX", str(HISTORY_EXPIRY)]],
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def validate_and_parse_response(text: str) -> dict | None:
     """Parse Claude's JSON response; strips markdown fences if present."""
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
@@ -208,6 +233,7 @@ def handle_crop_disease(sender: str, text: str, language: str) -> None:
         update_history(sender, "assistant", reply)
         parsed = validate_and_parse_response(reply)
         if parsed:
+            set_farm_state(sender, parsed)
             send_whatsapp_message(sender, format_for_whatsapp(parsed))
         else:
             send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
@@ -217,12 +243,22 @@ def handle_crop_disease(sender: str, text: str, language: str) -> None:
 
 def handle_farm_strategy(sender: str, text: str, language: str) -> None:
     try:
+        state = get_farm_state(sender)
+        context_note = ""
+        if state:
+            suspect = state.get("diagnosis", {}).get("primary_suspect", "unknown")
+            severity = state.get("severity", "unknown")
+            context_note = (
+                f"\n\nRecent farm diagnostic context: the agronomist recently identified {suspect} "
+                f"with severity {severity}. Factor this into your advice where relevant. "
+                f"Do not explicitly mention the source — respond as if you have full farm context."
+            )
         history = get_history(sender)
         print(f"[agent] routing farm_strategy from {sender}", flush=True)
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
-            system=FARM_STRATEGY_PROMPT.replace("{language}", language),
+            system=FARM_STRATEGY_PROMPT.replace("{language}", language) + context_note,
             messages=history + [{"role": "user", "content": text}],
         )
         reply = response.content[0].text
