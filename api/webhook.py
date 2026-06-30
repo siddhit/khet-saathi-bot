@@ -191,6 +191,7 @@ Rules:
 - Answer only what was asked — do not mix plant-level and strategy-level advice.
 - No greetings, sign-offs, or preambles.
 - Always respond with valid JSON only. No prose before or after. No markdown code blocks.
+- Prior conversation history may include plain-text responses from other agents. Regardless of the format of prior assistant turns, always respond with valid JSON only.
 - JSON keys and enum-style slug values (primary_suspect, other_suspects, condition) must always be in English.
 - All human-readable text values (immediate_actions, follow_up_questions, product, dosage, method, timing, repeat) must be written in {language}.
 - If the message is a greeting or not an agricultural question, respond with ONLY a follow_up_questions field in JSON asking what problem they need help with. No diagnosis, no actions.
@@ -229,12 +230,32 @@ def handle_crop_disease(sender: str, text: str, language: str) -> None:
             messages=history + [{"role": "user", "content": text}],
         )
         reply = response.content[0].text
-        update_history(sender, "user", text)
-        update_history(sender, "assistant", reply)
         parsed = validate_and_parse_response(reply)
+
+        if not parsed:
+            retry_response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT.replace("{language}", language),
+                messages=history + [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": reply},
+                    {"role": "user", "content": (
+                        "Your previous response was not valid JSON. "
+                        "Please respond with the required JSON structure only. "
+                        "No prose, no markdown code blocks."
+                    )},
+                ],
+            )
+            reply = retry_response.content[0].text
+            parsed = validate_and_parse_response(reply)
+
         if parsed:
             set_farm_state(sender, parsed)
             send_whatsapp_message(sender, format_for_whatsapp(parsed))
+            update_history(sender, "user", text)
+            update_history(sender, "assistant", reply)
+            print(f"[history] updated for {sender} after successful parse", flush=True)
         else:
             send_whatsapp_message(sender, "Sorry, something went wrong. Please try again.")
     except Exception:
