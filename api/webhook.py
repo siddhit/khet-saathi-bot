@@ -269,7 +269,8 @@ Rules:
 - Respond conversationally in plain text in {language}.
 - Use simple, everyday words — no technical jargon.
 - No JSON, no schema, no bullet lists unless naturally helpful.
-- No greetings, sign-offs, or preambles."""
+- No greetings, sign-offs, or preambles.
+- You have a weather tool. Call it whenever the question involves harvest timing, irrigation scheduling, or disease spread risk — do not estimate weather from memory."""
 
 
 WEATHER_TOOL = {
