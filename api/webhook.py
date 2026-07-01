@@ -106,6 +106,25 @@ def review_crop_diagnosis(diagnosis: dict, original_text: str) -> str | None:
         return None
 
 
+def get_weather(location: str) -> dict | None:
+    try:
+        resp = requests.get(
+            f"https://wttr.in/{location}?format=j1",
+            timeout=5,
+        )
+        data = resp.json()
+        cond = data["current_condition"][0]
+        result = {
+            "temp_c": cond["temp_C"],
+            "humidity": cond["humidity"],
+            "weather": cond["weatherDesc"][0]["value"],
+        }
+        print(f"[weather] {location}: {result}", flush=True)
+        return result
+    except Exception:
+        return None
+
+
 def validate_and_parse_response(text: str) -> dict | None:
     """Parse Claude's JSON response; strips markdown fences if present."""
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
@@ -253,6 +272,26 @@ Rules:
 - No greetings, sign-offs, or preambles."""
 
 
+WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": (
+        "Retrieves current temperature, humidity, and weather conditions for a farm location. "
+        "Use when the farmer asks about disease spread risk, irrigation needs, or harvest timing "
+        "where current weather conditions affect the recommendation."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": "City or district name in India (e.g., 'Amreli, Gujarat')"
+            }
+        },
+        "required": ["location"]
+    }
+}
+
+
 def handle_crop_disease(sender: str, text: str, language: str) -> None:
     try:
         history = get_history(sender)
@@ -318,9 +357,33 @@ def handle_farm_strategy(sender: str, text: str, language: str) -> None:
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
             system=FARM_STRATEGY_PROMPT.replace("{language}", language) + context_note,
+            tools=[WEATHER_TOOL],
             messages=history + [{"role": "user", "content": text}],
         )
-        reply = response.content[0].text
+        if response.stop_reason == "tool_use":
+            tool_block = next(b for b in response.content if b.type == "tool_use")
+            location = tool_block.input.get("location", "Amreli, Gujarat")
+            weather = get_weather(location)
+            weather_content = json.dumps(weather) if weather else "Weather data unavailable."
+
+            final_response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=FARM_STRATEGY_PROMPT.replace("{language}", language) + context_note,
+                tools=[WEATHER_TOOL],
+                messages=history + [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": response.content},
+                    {"role": "user", "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_block.id,
+                        "content": weather_content
+                    }]},
+                ],
+            )
+            reply = final_response.content[0].text
+        else:
+            reply = response.content[0].text
         update_history(sender, "user", text)
         update_history(sender, "assistant", reply)
         send_whatsapp_message(sender, reply)
