@@ -72,6 +72,40 @@ def set_farm_state(phone: str, diagnosis: dict) -> None:
         pass
 
 
+def review_crop_diagnosis(diagnosis: dict, original_text: str) -> str | None:
+    try:
+        primary = diagnosis.get("diagnosis", {}).get("primary_suspect", "unknown")
+        severity = diagnosis.get("severity", "unknown")
+        treatments = diagnosis.get("treatments", [])
+        treatment_summary = "; ".join(
+            f"{t.get('condition', '')}: {t.get('product', '')} {t.get('dosage', '')}".strip()
+            for t in treatments
+        ) or "none"
+        user_message = (
+            f"Farmer's message: {original_text}\n"
+            f"Primary suspect: {primary}\n"
+            f"Severity: {severity}\n"
+            f"Treatments recommended: {treatment_summary}"
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=100,
+            system=(
+                "You are an independent agronomist reviewing a crop disease diagnosis. "
+                "You have no prior context about this case. Review the diagnosis and identify any significant concerns: "
+                "misidentification risk, dangerous treatment recommendations, or important alternatives not considered. "
+                "If the diagnosis looks sound, respond with exactly: OK. "
+                "If you have a concern, respond with one sentence only."
+            ),
+            messages=[{"role": "user", "content": user_message}],
+        )
+        result = response.content[0].text.strip()
+        print(f"[claude_raw] reviewer: {result[:80]}", flush=True)
+        return None if result == "OK" else result
+    except Exception:
+        return None
+
+
 def validate_and_parse_response(text: str) -> dict | None:
     """Parse Claude's JSON response; strips markdown fences if present."""
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
@@ -252,7 +286,11 @@ def handle_crop_disease(sender: str, text: str, language: str) -> None:
 
         if parsed:
             set_farm_state(sender, parsed)
-            send_whatsapp_message(sender, format_for_whatsapp(parsed))
+            concern = review_crop_diagnosis(parsed, text)
+            message = format_for_whatsapp(parsed)
+            if concern is not None:
+                message += f"\n\n_Note: {concern}_"
+            send_whatsapp_message(sender, message)
             update_history(sender, "user", text)
             update_history(sender, "assistant", reply)
             print(f"[history] updated for {sender} after successful parse", flush=True)
