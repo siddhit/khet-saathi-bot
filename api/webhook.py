@@ -269,28 +269,7 @@ Rules:
 - Respond conversationally in plain text in {language}.
 - Use simple, everyday words — no technical jargon.
 - No JSON, no schema, no bullet lists unless naturally helpful.
-- No greetings, sign-offs, or preambles.
-- You have a weather tool. Call it whenever the question involves harvest timing, irrigation scheduling, or disease spread risk — do not estimate weather from memory."""
-
-
-WEATHER_TOOL = {
-    "name": "get_weather",
-    "description": (
-        "Retrieves current temperature, humidity, and weather conditions for a farm location. "
-        "Use when the farmer asks about disease spread risk, irrigation needs, or harvest timing "
-        "where current weather conditions affect the recommendation."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "location": {
-                "type": "string",
-                "description": "City or district name in India (e.g., 'Amreli, Gujarat')"
-            }
-        },
-        "required": ["location"]
-    }
-}
+- No greetings, sign-offs, or preambles."""
 
 
 def handle_crop_disease(sender: str, text: str, language: str) -> None:
@@ -352,39 +331,22 @@ def handle_farm_strategy(sender: str, text: str, language: str) -> None:
                 f"with severity {severity}. Factor this into your advice where relevant. "
                 f"Do not explicitly mention the source — respond as if you have full farm context."
             )
+        weather = get_weather("Amreli, Gujarat")
+        if weather:
+            context_note += (
+                f"\n\nCurrent weather at the farm: {weather['temp_c']}°C, "
+                f"humidity {weather['humidity']}%, {weather['weather']}. "
+                f"Use this when advising on harvest timing, irrigation, or disease spread risk."
+            )
         history = get_history(sender)
         print(f"[agent] routing farm_strategy from {sender}", flush=True)
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
             system=FARM_STRATEGY_PROMPT.replace("{language}", language) + context_note,
-            tools=[WEATHER_TOOL],
             messages=history + [{"role": "user", "content": text}],
         )
-        if response.stop_reason == "tool_use":
-            tool_block = next(b for b in response.content if b.type == "tool_use")
-            location = tool_block.input.get("location", "Amreli, Gujarat")
-            weather = get_weather(location)
-            weather_content = json.dumps(weather) if weather else "Weather data unavailable."
-
-            final_response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
-                system=FARM_STRATEGY_PROMPT.replace("{language}", language) + context_note,
-                tools=[WEATHER_TOOL],
-                messages=history + [
-                    {"role": "user", "content": text},
-                    {"role": "assistant", "content": response.content},
-                    {"role": "user", "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": tool_block.id,
-                        "content": weather_content
-                    }]},
-                ],
-            )
-            reply = final_response.content[0].text
-        else:
-            reply = response.content[0].text
+        reply = response.content[0].text
         update_history(sender, "user", text)
         update_history(sender, "assistant", reply)
         send_whatsapp_message(sender, reply)
